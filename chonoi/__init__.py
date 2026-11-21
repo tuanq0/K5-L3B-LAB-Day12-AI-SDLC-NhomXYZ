@@ -5,5 +5,5 @@ rng, ids, jsonl, inventory, runner. Phần LUẬT CHƠI (nhóm viết): chonoi/s
 tìm các chỗ có `TODO(nhóm)`.
 """
 
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.1"
 TICK_HZ = 60

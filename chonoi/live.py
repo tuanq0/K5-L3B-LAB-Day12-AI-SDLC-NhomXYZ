@@ -1,10 +1,10 @@
 """Cửa sổ chơi trực tiếp bằng TRÌNH DUYỆT, chỉ dùng thư viện chuẩn Python.
 
-    python3 -m chonoi.live --mode gather|quan [--seed N] [--port 8000]
+    python3 -m chonoi.live --mode gather|quan|day [--seed N] [--port 8000]
 
 Máy chủ HTTP nhỏ (ThreadingHTTPServer) phục vụ `chonoi/web/index.html` và hai API:
     GET  /state  -> snapshot JSON hiện tại (cùng trường như dòng snapshot của headless) + `meta` + `events`
-    POST /input  -> {"move": [a, b], "interact": bool, "catch": bool}   (trạng thái phím đang giữ)
+    POST /input  -> trạng thái phím, hoặc lệnh Shop bằng {"buy": "shop"|"oxygen"|"hp"}
     POST /restart -> chơi lại từ đầu (cùng seed, cùng scenario)
 
 Mô phỏng chạy 60 tick/s trong một luồng nền, dùng CÙNG lớp sim như headless (qua `runner.Session`).
@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -34,12 +35,77 @@ MAX_BODY = 4096
 RECENT_EVENTS = 40
 
 
+def _upgrade_store_path():
+    override = os.environ.get("CHONOI_UPGRADES_PATH")
+    if override:
+        return os.path.abspath(override)
+    if os.environ.get("LOCALAPPDATA"):
+        base = os.environ["LOCALAPPDATA"]
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "chonoi", "upgrades.json")
+
+
+def _validated_upgrades(upgrades, tuning):
+    if not isinstance(upgrades, dict) or set(upgrades) - {"oxygen", "hp"}:
+        raise BadInput("dữ liệu nâng cấp phải là map chỉ gồm oxygen và hp")
+    result = {}
+    for action in ("oxygen", "hp"):
+        level = upgrades.get(action, 0)
+        if isinstance(level, bool) or not isinstance(level, int):
+            raise BadInput(f"cấp nâng cấp {action} phải là số nguyên")
+        if not 0 <= level <= len(tuning["shop"]["upgrades"][action]):
+            raise BadInput(f"cấp nâng cấp {action} nằm ngoài phạm vi")
+        if level:
+            result[action] = level
+    return result
+
+
+def _read_upgrade_store(path, tuning):
+    try:
+        with open(path, encoding="utf-8") as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, UnicodeDecodeError) as error:
+        raise BadInput(f"không đọc được dữ liệu nâng cấp {path}: {error}")
+    return _validated_upgrades(data, tuning)
+
+
+def _write_upgrade_store(path, upgrades):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix="upgrades-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(upgrades, file, ensure_ascii=False, sort_keys=True)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    except OSError:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
+
+
+def _merge_upgrades(*sources):
+    result = {}
+    for action in ("oxygen", "hp"):
+        level = max(int(source.get(action, 0)) for source in sources)
+        if level:
+            result[action] = level
+    return result
+
+
 class LiveGame:
     """Một lượt chơi + luồng nền bước 60 tick/s. Mọi truy cập trạng thái đi qua khóa."""
 
-    def __init__(self, mode, tuning, scenario, seed, inventory=None, inventory_out=None):
+    def __init__(self, mode, tuning, scenario, seed, inventory=None, inventory_out=None, days=1):
         self.tuning = tuning
         self.seed = seed
+        self.days = days
+        self._upgrades_path = _upgrade_store_path()
+        self._saved_upgrades = _read_upgrade_store(self._upgrades_path, tuning)
         self.gather_scenario = scenario if mode == "gather" else {}
         self.mode = mode
         self.inventory_out = inventory_out
@@ -52,10 +118,25 @@ class LiveGame:
                 "earned": 0,
                 "shift_earned": 0,
                 "reputation": tuning["quan"]["reputation_initial"],
-                "time_left_ticks": int(round(tuning["quan"]["duration_s"] * 60)),
             }
             scenario = dict(scenario)
             scenario.update(self._quan_state)
+            scenario["upgrades"] = _merge_upgrades(
+                scenario.get("upgrades", {}), self._saved_upgrades
+            )
+        elif mode == "gather":
+            scenario = dict(scenario)
+            scenario["active_upgrades"] = _merge_upgrades(
+                _validated_upgrades(scenario.get("active_upgrades", {}), tuning),
+                self._saved_upgrades
+            )
+        elif mode == "day":
+            scenario = dict(scenario)
+            day = dict(scenario.get("day", {}))
+            day["upgrades"] = _merge_upgrades(
+                _validated_upgrades(day.get("upgrades", {}), tuning), self._saved_upgrades
+            )
+            scenario["day"] = day
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -63,11 +144,30 @@ class LiveGame:
         self._reset()
 
     def _reset(self):
-        self.session = Session(*self._args)
+        if self.mode == "day":
+            self.session = Session(*self._args, days=self.days)
+        else:
+            self.session = Session(*self._args)
+        if self.mode in ("quan", "day"):
+            self.session.sim.persist_upgrades = self._persist_upgrades
         self.inputs = LiveInputs()
         self.events = []
         self._saved = False
         self.error = None
+
+    def _persist_upgrades(self, upgrades):
+        validated = _validated_upgrades(upgrades, self.tuning)
+        _write_upgrade_store(self._upgrades_path, validated)
+        self._saved_upgrades = validated
+        mode, tuning, scenario, seed, inventory = self._args
+        scenario = dict(scenario)
+        if mode == "quan":
+            scenario["upgrades"] = dict(validated)
+        elif mode == "day":
+            day = dict(scenario.get("day", {}))
+            day["upgrades"] = dict(validated)
+            scenario["day"] = day
+        self._args = (mode, tuning, scenario, seed, inventory)
 
     # --- luồng nền ----------------------------------------------------------------
     def start(self):
@@ -119,17 +219,17 @@ class LiveGame:
 
     def _transition_to_quan(self):
         """Chuyển tiếp vào quán với đúng giỏ vừa kết thúc buổi lặn."""
-        inventory = dict(self.session.sim.inventory_items())
-        inventory = self._merge_stock(inventory, self._carry_stock)
-        self._carry_stock = {}
+        gathered = dict(self.session.sim.inventory_items())
+        existing_stock = dict((self._quan_state or {}).get("stock", {}))
+        inventory = self._merge_stock(existing_stock, gathered)
         quan = dict(self._quan_state or {
             "money": 0,
             "earned": 0,
             "shift_earned": 0,
             "reputation": self.tuning["quan"]["reputation_initial"],
-            "time_left_ticks": int(round(self.tuning["quan"]["duration_s"] * 60)),
         })
         quan["stock"] = inventory
+        quan["time_left_ticks"] = int(round(self.tuning["quan"]["duration_s"] * 60))
         self.mode = "quan"
         self.inventory_out = None
         self._args = ("quan", self.tuning, quan, self.seed, inventory)
@@ -157,28 +257,33 @@ class LiveGame:
             "earned": quan.earned,
             "shift_earned": quan.shift_earned,
             "reputation": quan.reputation,
-            "time_left_ticks": quan.time_left_ticks,
         }
-        capacity = int(self.tuning["gather"]["hold_capacity"])
-        hold = []
-        remaining = {}
-        for kind in sorted(stock):
-            amount = int(stock[kind])
-            use = min(amount, capacity - len(hold))
-            hold.extend([kind] * use)
-            if amount > use:
-                remaining[kind] = amount - use
-        self._carry_stock = remaining
         self.mode = "gather"
         self.inventory_out = None
-        self._args = ("gather", self.tuning, {"hold": hold}, self.seed, None)
+        self._args = ("gather", self.tuning,
+                      {"hold": [], "active_upgrades": dict(self._saved_upgrades)},
+                      self.seed, None)
         self._reset()
 
     # --- API cho handler -----------------------------------------------------------
     def state_json(self) -> bytes:
         with self._lock:
             snap = self.session.snapshot()
-            snap["meta"] = self.tuning[self.mode]
+            if self.mode == "day":
+                phase = getattr(self.session.sim, "phase", "gather")
+                snap["meta"] = self.tuning.get(phase, self.tuning["gather"])
+            elif self.mode == "quan":
+                snap["meta"] = dict(self.tuning["quan"])
+                snap["meta"]["shop"] = self.tuning["shop"]
+            else:
+                snap["meta"] = self.tuning[self.mode]
+            if self.mode == "gather":
+                duration_ticks = int(round(self.tuning["gather"]["duration_s"] * 60))
+                remaining = max(0, int(snap.get("time_left_ticks", 0)))
+                elapsed_ratio = 1.0 - (remaining / duration_ticks if duration_ticks else 0)
+                snap["sunset_ratio"] = max(0.0, min(1.0, elapsed_ratio))
+                snap["is_night"] = remaining == 0
+            snap["menu"] = self.tuning["menu"]
             snap["events"] = list(self.events)
             snap["finished"] = self.session.done
             snap["reason"] = self.session.sim.reason if self.session.done else None
@@ -193,11 +298,15 @@ class LiveGame:
             if not ok:
                 raise ValueError("move phải là [a, b] trong [-1, 1]")
         buttons = {}
-        for b in ("interact", "catch"):
+        for b in ("interact", "catch", "pause", "shop_done"):
             if b in body:
                 if not isinstance(body[b], bool):
                     raise ValueError(f"{b} phải là boolean")
                 buttons[b] = body[b]
+        if "buy" in body:
+            if not isinstance(body["buy"], str) or not body["buy"]:
+                raise ValueError("buy phải là chuỗi khác rỗng")
+            buttons["buy"] = body["buy"]
         with self._lock:
             self.inputs.set(move, **buttons)
 
@@ -294,25 +403,30 @@ class LiveServer:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="chonoi.live", description="Chơi trực tiếp trên trình duyệt (starter).")
-    p.add_argument("--mode", required=True, choices=["gather", "quan"])
+    p.add_argument("--mode", required=True, choices=["gather", "quan", "day"])
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--port", type=int, default=8000, help="0 = cổng ngẫu nhiên")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--scenario")
     p.add_argument("--inventory", help="chỉ với quan: nạp kho từ file")
     p.add_argument("--inventory-out", dest="inventory_out", help="chỉ với gather: ghi kho khi kết thúc buổi")
+    p.add_argument("--days", type=int, default=1, help="chỉ với day: số Ngày chơi, 1–5")
     a = p.parse_args(argv)
     try:
         if a.inventory and a.mode != "quan":
             raise BadInput("--inventory chỉ dùng với quan")
         if a.inventory_out and a.mode != "gather":
             raise BadInput("--inventory-out chỉ dùng với gather")
+        if a.mode != "day" and a.days != 1:
+            raise BadInput("--days chỉ dùng với day")
+        if not (1 <= a.days <= 5):
+            raise BadInput("--days phải trong [1,5]")
         tuning = load_contract()["tuning"]
         scenario = load_scenario(a.scenario, a.mode, tuning)
         inventory = read_inventory(a.inventory) if a.inventory else None
         if inventory is not None and "stock" in scenario:
             raise BadInput("vừa có quan.stock vừa có --inventory")
-        game = LiveGame(a.mode, tuning, scenario, a.seed, inventory, a.inventory_out)
+        game = LiveGame(a.mode, tuning, scenario, a.seed, inventory, a.inventory_out, days=a.days)
         server = LiveServer(game, a.host, a.port)
     except BadInput as e:
         sys.stderr.write(f"đầu vào sai: {e}\n")

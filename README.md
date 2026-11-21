@@ -21,7 +21,9 @@ PYTHONPATH=tests:. python3 -m unittest discover -s tests -v        # smoke test
 python3 -m chonoi.live --mode gather                                # chơi thử trên trình duyệt (tùy chọn)
 ```
 
-Game cần chế độ **headless** theo Test Contract (`python3 -m chonoi.headless --mode gather|quan …`) để được chạy và chấm tự động. **Công nghệ không ràng buộc**: khung Python trong `chonoi/` chỉ là gợi ý, chi tiết ở [`docs/STARTER.md`](docs/STARTER.md).
+Game cần chế độ **headless** theo Test Contract (`python3 -m chonoi.headless --mode gather|quan|day …`) để được chạy và chấm tự động. **Công nghệ không ràng buộc**: khung Python trong `chonoi/` chỉ là gợi ý, chi tiết ở [`docs/STARTER.md`](docs/STARTER.md).
+
+Trong `--mode quan`, bấm **B** mở Shop (ca tạm dừng), **1** mua Bình oxy, **2** mua Áo phao, rồi **Enter** để đóng; cũng có thể bấm nút trên màn hình. Nâng cấp được lưu ở user data (`%LOCALAPPDATA%\Chonoi\upgrades.json` trên Windows, `~/.local/share/chonoi/upgrades.json` trên hệ khác) và áp dụng cho lần Gather/Day sau. Trong vòng ngày, Shop vẫn mở sau buổi tối; nâng cấp mua tại đó có hiệu lực từ Ngày kế tiếp.
 
 ## Tự do sáng tạo
 

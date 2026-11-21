@@ -12,10 +12,14 @@ class QuanSim:
     mode = "quan"
     phase = "quan"
 
-    def __init__(self, tuning, scenario, streams, ids, inventory=None):
+    def __init__(self, tuning, scenario, streams, ids, inventory=None, allow_midshift_shop=True):
         t = tuning["quan"]
         self.t = t
         self.menu = tuning["menu"]
+        self.upgrade_levels = tuning.get("shop", {}).get("upgrades", {})
+        self.upgrades = dict(scenario.get("upgrades", {}))
+        self.shop_open = False
+        self.allow_midshift_shop = allow_midshift_shop
         self.rng = streams
         self.ids = ids
         p = scenario.get("player", {})
@@ -35,6 +39,7 @@ class QuanSim:
         self.phase_tick = 0
         self.random_customers = scenario.get("random_customers", True)
         self.gather_portal = [14.0, 8.0]
+        self.plan_dishes = set(scenario.get("plan_dishes", []))
         self.patience_max = int(round(t["patience_s"] * TICK))
         self.eat_ticks = int(round(t["eat_s"] * TICK))
         self.customers = []
@@ -62,6 +67,7 @@ class QuanSim:
         self.shift_earned = int(scenario.get("shift_earned", 0))
         self.done = False
         self.reason = None
+        self.paused = False
 
     @staticmethod
     def _merge(defaults, updates):
@@ -84,10 +90,31 @@ class QuanSim:
                        for s in self.stoves],
             "tables": [{"id": tb["id"], "pos": tb["pos"], "customer_id": occupied.get(tb["id"])} for tb in self.tables],
             "customers": sort_by_id(self.customers),
+            "shop_open": self.shop_open,
+            "upgrades": self.upgrades,
+            "active_upgrades": self.upgrades,
         }
 
     def step(self, inp):
         events = []
+        if inp.pressed("pause"):
+            self.paused = not self.paused
+            events.append(("resumed", {}) if not self.paused else ("paused", {}))
+            if self.paused:
+                return events
+        if self.paused:
+            return events
+        if self.shop_open:
+            if getattr(inp, "buy", None):
+                events.extend(self._buy_upgrade(inp.buy))
+            if inp.pressed("shop_done"):
+                self.shop_open = False
+                events.append(("shop_closed", {}))
+            return events
+        if self.allow_midshift_shop and getattr(inp, "buy", None) == "shop":
+            self.shop_open = True
+            events.append(("shop_opened", {}))
+            return events
         self.time_left_ticks = max(0, self.time_left_ticks - 1)
         self.phase_tick += 1
         closing = self.time_left_ticks == 0
@@ -140,6 +167,32 @@ class QuanSim:
                                         "shift_earned": self.shift_earned, "reputation": self.reputation}))
         return events
 
+    def _buy_upgrade(self, action):
+        if action not in ("oxygen", "hp"):
+            return [("buy_failed", {"action": action, "reason": "unknown"})]
+        current = int(self.upgrades.get(action, 0))
+        levels = self.upgrade_levels.get(action, [])
+        if current >= len(levels):
+            return [("buy_failed", {"action": action, "reason": "max_level"})]
+        upgrade = levels[current]
+        price = int(upgrade["price"])
+        if self.money < price:
+            return [("buy_failed", {"action": action, "reason": "funds"})]
+
+        updated = dict(self.upgrades)
+        updated[action] = current + 1
+        persist = getattr(self, "persist_upgrades", None)
+        if persist is not None:
+            try:
+                persist(updated)
+            except OSError as error:
+                return [("buy_failed", {"action": action, "reason": "save_error",
+                                        "message": str(error)})]
+        self.money -= price
+        self.upgrades = updated
+        return [("bought", {"upgrade": action, "level": current + 1,
+                            "price": price, "money": self.money})]
+
     def _reserved_total(self):
         totals = {}
         for customer in self.customers:
@@ -171,8 +224,9 @@ class QuanSim:
             return events
 
         table = candidates[0]
+        dish_ids = self.plan_dishes if getattr(self, "plan_dishes", set()) else set(self.menu)
         available = sorted(
-            (dish_id for dish_id in self.menu if self._dish_available(dish_id)),
+            (dish_id for dish_id in dish_ids if dish_id in self.menu and self._dish_available(dish_id)),
             key=lambda dish_id: dish_id,
         )
         if not available:

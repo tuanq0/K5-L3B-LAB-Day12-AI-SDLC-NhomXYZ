@@ -10,11 +10,12 @@ import json
 from .errors import BadInput
 from .inventory import KINDS_P1, validate_items
 
-GATHER_KEYS = {"player", "hold", "nodes", "fish", "random_fish", "time_left_ticks"}
+GATHER_KEYS = {"player", "hold", "nodes", "fish", "random_fish", "time_left_ticks",
+               "monsters", "ca_ho", "random_ho", "day", "active_upgrades"}
 GATHER_PLAYER_KEYS = {"pos", "vel", "heading_deg", "hp", "oxygen_ticks", "zero_oxy_ticks",
-                      "invuln_ticks", "catch_cd_ticks"}
-NODE_KINDS = ("bong_dien_dien", "bong_sung")
-FISH_KINDS = ("ca_linh", "ca_loc")
+                      "invuln_ticks", "catch_cd_ticks", "attack_cd_ticks"}
+NODE_KINDS = ("bong_dien_dien", "bong_sung", "keo_neo")
+FISH_KINDS = ("ca_linh", "ca_loc", "ca_keo")
 QUAN_PLAYER_KEYS = {"pos", "vel"}
 QUAN_KEYS = {"player", "stock", "hand", "stoves", "tables", "customers", "random_customers",
              "reputation", "time_left_ticks"}
@@ -40,7 +41,23 @@ def load_scenario(path, mode: str, tuning: dict) -> dict:
             data = json.load(f)
     except (OSError, ValueError) as e:
         raise BadInput(f"không đọc được scenario {path}: {e}")
-    if not isinstance(data, dict) or not set(data) <= {"gather", "quan"}:
+    if not isinstance(data, dict):
+        raise BadInput("scenario phải là object")
+    if mode == "day":
+        if not set(data) <= {"day", "gather", "quan"}:
+            raise BadInput("scenario day chỉ được có khối day/gather/quan")
+        day_block = data.get("day", {})
+        gather_block = data.get("gather", {})
+        quan_block = data.get("quan", {})
+        if not isinstance(day_block, dict) or not isinstance(gather_block, dict) or not isinstance(quan_block, dict):
+            raise BadInput("khối day/gather/quan phải là object")
+        if "stock" in quan_block or "reputation" in quan_block:
+            raise BadInput("day không cho quan.stock hoặc quan.reputation")
+        _validate_gather(gather_block, tuning)
+        _validate_quan(quan_block, tuning)
+        _validate_day(day_block, tuning)
+        return {"day": day_block, "gather": gather_block, "quan": quan_block}
+    if not set(data) <= {"gather", "quan"}:
         raise BadInput("scenario chỉ được có khối 'gather' hoặc 'quan'")
     if set(data) - {mode}:
         raise BadInput(f"khối sai mode: chạy --mode {mode} chỉ nhận khối '{mode}'")
@@ -107,13 +124,25 @@ def _validate_gather(b, tuning):
         raise BadInput("player.vel phải là [x, d]")
     if "heading_deg" in p and not _num(p["heading_deg"]):
         raise BadInput("player.heading_deg phải là số")
-    for key in ("invuln_ticks", "catch_cd_ticks", "zero_oxy_ticks", "oxygen_ticks", "hp"):
+    for key in ("invuln_ticks", "catch_cd_ticks", "zero_oxy_ticks", "oxygen_ticks", "hp", "attack_cd_ticks"):
         if key in p:
             _nonneg_int(f"player.{key}", p[key])
-    omax = int(round(g["oxygen_max_s"] * 60))
+    oxygen_level = int(b.get("active_upgrades", {}).get("oxygen", 0))
+    oxygen_max_s = g["oxygen_max_s"]
+    if oxygen_level:
+        levels = tuning["shop"]["upgrades"]["oxygen"]
+        if 1 <= oxygen_level <= len(levels):
+            oxygen_max_s = levels[oxygen_level - 1]["oxygen_max_s"]
+    omax = int(round(oxygen_max_s * 60))
     if "oxygen_ticks" in p and p["oxygen_ticks"] > omax:
         raise BadInput("player.oxygen_ticks vượt oxy tối đa")
-    if "hp" in p and not (1 <= p["hp"] <= g["hp_max"]):
+    hp_max = g["hp_max"]
+    hp_level = int(b.get("active_upgrades", {}).get("hp", 0))
+    if hp_level:
+        levels = tuning["shop"]["upgrades"]["hp"]
+        if 1 <= hp_level <= len(levels):
+            hp_max = levels[hp_level - 1]["hp_max"]
+    if "hp" in p and not (1 <= p["hp"] <= hp_max):
         raise BadInput("player.hp phải trong [1, hp_max]")
     if "zero_oxy_ticks" in p:
         pos = p.get("pos", g["start_pos"])
@@ -138,6 +167,23 @@ def _validate_gather(b, tuning):
             raise BadInput(f"fish.{f['id']}: đàn cá phải ở dưới nước")
         if "heading_deg" in f and not _num(f["heading_deg"]):
             raise BadInput(f"fish.{f['id']}.heading_deg phải là số")
+        if "age_ticks" in f:
+            _nonneg_int(f"fish.{f['id']}.age_ticks", f["age_ticks"])
+    if "monsters" in b:
+        monsters = b["monsters"]
+        if not isinstance(monsters, list):
+            raise BadInput("monsters phải là mảng")
+        _check_ids("monsters", monsters)
+        known = set(tuning["gather"]["monsters"]["species"])
+        for monster in monsters:
+            if monster.get("kind") not in known:
+                raise BadInput(f"monsters.{monster['id']}: kind không hợp lệ")
+            _pos(f"monsters.{monster['id']}.pos", monster.get("pos"), bounds)
+            waypoints = monster.get("waypoints")
+            if not isinstance(waypoints, list) or len(waypoints) != 2:
+                raise BadInput(f"monsters.{monster['id']}: cần 2 waypoint")
+            for waypoint in waypoints:
+                _pos(f"monsters.{monster['id']}.waypoints", waypoint, bounds)
 
 
 def _validate_quan(b, tuning):
@@ -304,3 +350,27 @@ def _validate_quan(b, tuning):
         customer_ids = {c["id"] for c in b.get("customers", [])}
         if hand["order_id"] not in customer_ids:
             raise BadInput("hand.order_id không tham chiếu khách có thật")
+
+
+def _validate_day(day_block, tuning):
+    allowed = {"money", "earned", "reputation", "upgrades", "day_plan"}
+    extra = set(day_block) - allowed
+    if extra:
+        raise BadInput(f"trường lạ/chưa hỗ trợ trong day: {sorted(extra)}")
+    money = day_block.get("money", 0)
+    earned = day_block.get("earned", 0)
+    if isinstance(money, bool) or not isinstance(money, int) or money < 0:
+        raise BadInput("day.money phải là số nguyên không âm")
+    if isinstance(earned, bool) or not isinstance(earned, int) or earned < 0:
+        raise BadInput("day.earned phải là số nguyên không âm")
+    if money > earned:
+        raise BadInput("day.money không được vượt earned")
+    if "reputation" in day_block:
+        reputation = day_block["reputation"]
+        if not _num(reputation):
+            raise BadInput("day.reputation phải là số")
+        if not (tuning["quan"]["reputation_min"] <= reputation <= tuning["quan"]["reputation_max"]):
+            raise BadInput("day.reputation ngoài miền")
+    upgrades = day_block.get("upgrades", {})
+    if not isinstance(upgrades, dict):
+        raise BadInput("day.upgrades phải là object")
