@@ -44,6 +44,18 @@ class LiveGame:
         self.mode = mode
         self.inventory_out = inventory_out
         self._carry_stock = {}
+        self._quan_state = None
+        if mode == "quan":
+            self._quan_state = {
+                "stock": dict(inventory or {}),
+                "money": 0,
+                "earned": 0,
+                "shift_earned": 0,
+                "reputation": tuning["quan"]["reputation_initial"],
+                "time_left_ticks": int(round(tuning["quan"]["duration_s"] * 60)),
+            }
+            scenario = dict(scenario)
+            scenario.update(self._quan_state)
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -91,6 +103,9 @@ class LiveGame:
             return
         for row in s.step(self.inputs.advance()):
             self.events.append(row)
+            if row["name"] == "gather_transition":
+                self._transition_to_gather_locked()
+                return
         del self.events[:-RECENT_EVENTS]
         if s.done and not self._saved:
             self._saved = True
@@ -107,9 +122,17 @@ class LiveGame:
         inventory = dict(self.session.sim.inventory_items())
         inventory = self._merge_stock(inventory, self._carry_stock)
         self._carry_stock = {}
+        quan = dict(self._quan_state or {
+            "money": 0,
+            "earned": 0,
+            "shift_earned": 0,
+            "reputation": self.tuning["quan"]["reputation_initial"],
+            "time_left_ticks": int(round(self.tuning["quan"]["duration_s"] * 60)),
+        })
+        quan["stock"] = inventory
         self.mode = "quan"
         self.inventory_out = None
-        self._args = ("quan", self.tuning, {}, self.seed, inventory)
+        self._args = ("quan", self.tuning, quan, self.seed, inventory)
         self._reset()
 
     def _merge_stock(self, first, second):
@@ -121,23 +144,35 @@ class LiveGame:
     def transition_to_gather(self):
         """Chuyển thủ công từ quán sang buổi gather."""
         with self._lock:
-            if self.mode != "quan":
-                return
-            stock = dict(self.session.sim.stock)
-            capacity = int(self.tuning["gather"]["hold_capacity"])
-            hold = []
-            remaining = {}
-            for kind in sorted(stock):
-                amount = int(stock[kind])
-                use = min(amount, capacity - len(hold))
-                hold.extend([kind] * use)
-                if amount > use:
-                    remaining[kind] = amount - use
-            self._carry_stock = remaining
-            self.mode = "gather"
-            self.inventory_out = None
-            self._args = ("gather", self.tuning, {"hold": hold}, self.seed, None)
-            self._reset()
+            self._transition_to_gather_locked()
+
+    def _transition_to_gather_locked(self):
+        if self.mode != "quan":
+            return
+        stock = dict(self.session.sim.stock)
+        quan = self.session.sim
+        self._quan_state = {
+            "stock": stock,
+            "money": quan.money,
+            "earned": quan.earned,
+            "shift_earned": quan.shift_earned,
+            "reputation": quan.reputation,
+            "time_left_ticks": quan.time_left_ticks,
+        }
+        capacity = int(self.tuning["gather"]["hold_capacity"])
+        hold = []
+        remaining = {}
+        for kind in sorted(stock):
+            amount = int(stock[kind])
+            use = min(amount, capacity - len(hold))
+            hold.extend([kind] * use)
+            if amount > use:
+                remaining[kind] = amount - use
+        self._carry_stock = remaining
+        self.mode = "gather"
+        self.inventory_out = None
+        self._args = ("gather", self.tuning, {"hold": hold}, self.seed, None)
+        self._reset()
 
     # --- API cho handler -----------------------------------------------------------
     def state_json(self) -> bytes:

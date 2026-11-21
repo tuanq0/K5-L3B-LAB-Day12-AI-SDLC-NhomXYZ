@@ -223,6 +223,14 @@ function drawQuan(w, h) {
   const sx = (x) => ox + x * s, sy = (z) => oy + (Z - z) * s;
   ctx.fillStyle = "#c9a36b"; ctx.fillRect(sx(0), sy(Z), X * s, Z * s);
   ctx.strokeStyle = "#6b4a2b"; ctx.lineWidth = 4; ctx.strokeRect(sx(0), sy(Z), X * s, Z * s);
+  // Cửa sang Gather
+  const gp = snap.gather_portal || [14, 8];
+  ctx.fillStyle = "#3b82f6";
+  ctx.fillRect(sx(gp[0]) - 1.1 * s, sy(gp[1]) - 1.1 * s, 2.2 * s, 2.2 * s);
+  ctx.strokeStyle = "#dbeafe"; ctx.lineWidth = 2;
+  ctx.strokeRect(sx(gp[0]) - 1.1 * s, sy(gp[1]) - 1.1 * s, 2.2 * s, 2.2 * s);
+  text("GATHER", sx(gp[0]), sy(gp[1]) - 1.35 * s, { size: 11, align: "center", color: "#dbeafe" });
+  text("E / G", sx(gp[0]), sy(gp[1]) + 1.35 * s, { size: 11, align: "center", color: "#111" });
   // bếp
   (snap.stoves || []).forEach((st) => {
     const col = st.state === "cooking" ? "#e8892b" : st.state === "ready" ? "#6fbf5a" : "#6d6d72";

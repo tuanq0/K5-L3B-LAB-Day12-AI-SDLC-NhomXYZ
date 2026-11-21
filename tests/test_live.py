@@ -27,6 +27,35 @@ def _post(url, obj):
 
 
 class LiveServerTest(unittest.TestCase):
+    def test_customer_arrives_again_when_previous_customer_leaves(self):
+        tuning = load_contract()["tuning"]
+        from chonoi.runner import Session
+        from chonoi.inputs import LiveInputs
+
+        scenario = {
+            "random_customers": True,
+            "stock": {"ca_loc": 2},
+            "time_left_ticks": 10800,
+            "customers": [{
+                "id": "C1",
+                "table_id": "T1",
+                "dish_id": "ca_loc_nuong_trui",
+                "order_tick": 1,
+                "state": "eating",
+                "patience_ticks_left": 3600,
+                "eat_ticks_left": 1,
+                "order_status": "served",
+                "reserved": {},
+                "base_price": 60,
+                "tip": 12,
+            }],
+        }
+        session = Session("quan", tuning, scenario, 1)
+        rows = session.step(LiveInputs().advance())
+        names = [row["name"] for row in rows]
+        self.assertIn("paid", names)
+        self.assertIn("customer_arrived", names)
+
     def test_gather_end_transitions_to_quan_with_inventory(self):
         tuning = load_contract()["tuning"]
         game = LiveGame("gather", tuning, {"hold": ["ca_loc", "bong_sung"]}, 1)

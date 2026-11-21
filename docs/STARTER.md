@@ -22,6 +22,8 @@ Lệnh in một địa chỉ (mặc định `http://127.0.0.1:8000/`); mở nó 
 
 Trong quán, nhấn **G** để quay sang buổi Gather. Kho quán được chuyển vào giỏ (tối đa sức chứa giỏ); khi buổi Gather kết thúc, hàng mới và phần kho còn lại sẽ trở lại quán.
 
+UI quán có một cửa **GATHER** tại góc trên bên phải. Đến cửa đó và nhấn **E** hoặc dùng phím tắt **G** để sang Gather; có thể thực hiện trong lúc quán vẫn còn thời gian.
+
 ## Công nghệ: tự chọn (starter chỉ là gợi ý, KHÔNG bắt buộc)
 
 Nhóm được dùng **bất kỳ ngôn ngữ/engine nào**. Thứ duy nhất bắt buộc là **Test Contract** (chế độ headless theo tài liệu phase) và `game.contract.json` khai đúng `build_cmd`, `headless_cmd`.

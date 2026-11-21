@@ -34,6 +34,7 @@ class QuanSim:
         self.tables = self._merge(t["tables"], scenario.get("tables", []))
         self.phase_tick = 0
         self.random_customers = scenario.get("random_customers", True)
+        self.gather_portal = [14.0, 8.0]
         self.patience_max = int(round(t["patience_s"] * TICK))
         self.eat_ticks = int(round(t["eat_s"] * TICK))
         self.customers = []
@@ -56,9 +57,9 @@ class QuanSim:
             self.customers.append(customer)
         for e in self.customers:
             ids.reserve(e["id"])
-        self.money = 0
-        self.earned = 0
-        self.shift_earned = 0
+        self.money = int(scenario.get("money", 0))
+        self.earned = int(scenario.get("earned", 0))
+        self.shift_earned = int(scenario.get("shift_earned", 0))
         self.done = False
         self.reason = None
 
@@ -76,6 +77,7 @@ class QuanSim:
         occupied = {c["table_id"]: c["id"] for c in self.customers}
         return {
             "player": {"pos": self.pos},
+            "gather_portal": self.gather_portal,
             "stock": {k: self.stock[k] for k in sorted(self.stock) if self.stock[k] > 0},
             "hand": self.hand,
             "stoves": [{k: s.get(k) for k in ("id", "pos", "state", "dish", "cook_ticks_left", "ready_ticks")}
@@ -118,14 +120,18 @@ class QuanSim:
                 kind, obj = candidate
                 if kind == "stove":
                     events.extend(self._interact_stove(obj))
+                elif kind == "gather":
+                    events.append(("gather_transition", {}))
                 else:
                     events.extend(self._interact_table(obj))
 
         # Trả tiền ăn xong trước; khách kiên nhẫn hết rời nếu ca còn giờ.
+        customer_count_before_leave = len(self.customers)
         events.extend(self._remove_finished_and_leave(closing))
+        table_just_freed = len(self.customers) < customer_count_before_leave
 
         if not closing:
-            events.extend(self._maybe_arrive())
+            events.extend(self._maybe_arrive(force=table_just_freed))
 
         if self.time_left_ticks <= 0:
             self.done = True
@@ -147,14 +153,14 @@ class QuanSim:
         return all(self.stock.get(kind, 0) - reserved.get(kind, 0) >= amount
                    for kind, amount in recipe.items())
 
-    def _maybe_arrive(self):
+    def _maybe_arrive(self, force=False):
         events = []
         first = int(self.t["first_customer_tick"])
         interval = int(round(self.t["customer_interval_s"] * TICK))
         due = self.phase_tick == first or (
             self.phase_tick > first and (self.phase_tick - first) % interval == 0
         )
-        if not due or not self.random_customers:
+        if (not due and not force) or not self.random_customers:
             return events
 
         # Một lượt khách chỉ chiếm bàn trống id nhỏ nhất.
@@ -196,6 +202,9 @@ class QuanSim:
 
     def _nearest_interactable(self):
         candidates = []
+        gather_distance = math.dist(self.pos, self.gather_portal)
+        if gather_distance <= self.t["interact_radius"]:
+            candidates.append((gather_distance, 0, ("", -1, "Gather"), "gather", None))
         for stove in self.stoves:
             distance = math.dist(self.pos, stove["pos"])
             if distance <= self.t["interact_radius"]:
