@@ -17,6 +17,7 @@
  * Client chơi trực tiếp (starter). CHỈ ĐỌC snapshot từ GET /state và gửi phím qua POST /input.
  * Trường nào snapshot chưa có thì bỏ qua (nhóm viết luật tới đâu, hình hiện tới đó). Hình khối tạm, thay bằng đồ họa của nhóm.
  * Phím: WASD / mũi tên = di chuyển · E = interact · Space = catch · R = chơi lại.
+ * Từ quán: G = đi Gather.
  */
 const cv = document.getElementById("c");
 const ctx = cv.getContext("2d");
@@ -59,6 +60,7 @@ addEventListener("keydown", (e) => {
   else if (k === "e") down.add("interact");
   else if (k === " ") { down.add("catch"); e.preventDefault(); }
   else if (k === "r") { fetch("/restart", { method: "POST" }); lastSent = ""; down.clear(); }
+  else if (k === "g" && snap && snap.mode === "quan") { fetch("/gather", { method: "POST" }); lastSent = ""; down.clear(); }
   pushInput();
 });
 addEventListener("keyup", (e) => {
@@ -260,6 +262,9 @@ function drawQuan(w, h) {
   text(`Tiền ${snap.money ?? 0}k · uy tín ${(snap.reputation ?? 0).toFixed(1)} · điểm ${snap.score ?? 0}`, 110, 28, { size: 16 });
   const stock = snap.stock ? Object.keys(snap.stock).map((k) => (KIND_NAME[k] || k) + "×" + snap.stock[k]).join(", ") : "";
   text("Kho: " + (stock || "(trống)"), 14, 52, { size: 13, color: "#cfd8dc" });
+  ctx.fillStyle = "rgba(16,22,28,.72)";
+  ctx.fillRect(w - 255, h - 58, 245, 38);
+  text("G — đi Gather", w - 245, h - 34, { size: 14, align: "left", color: "#ffe082" });
   text("WASD/mũi tên đi · E tương tác (bếp / bàn) · R chơi lại", w - 10, h - 14, { size: 12, align: "right", color: "#9fb3c0" });
 }
 

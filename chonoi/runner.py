@@ -49,7 +49,8 @@ class Session:
         return self.sim.done
 
     def snapshot(self) -> dict:
-        s = _common(self.sim, self.tick, self.tick, self.tick, self.tuning, "finished" if self.sim.done else "playing")
+        phase_tick = getattr(self.sim, "phase_tick", self.tick)
+        s = _common(self.sim, self.tick, self.tick, phase_tick, self.tuning, "finished" if self.sim.done else "playing")
         s.update(self.sim.snapshot())
         return s
 

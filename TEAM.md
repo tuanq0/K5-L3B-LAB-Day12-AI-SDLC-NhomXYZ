@@ -1,6 +1,6 @@
 # TEAM
 
-**Tên nhóm:** …  **Số người:** …  (khớp `team_size` trong `game.contract.json`)
+**Tên nhóm:** NhomXYZ  **Số người:** 1  (khớp `team_size` trong `game.contract.json`)
 
 | Thành viên | GitHub handle | Module chính | Vai quy trình | Người dự phòng cho |
 |---|---|---|---|---|

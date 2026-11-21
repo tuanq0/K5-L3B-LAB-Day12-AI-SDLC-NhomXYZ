@@ -38,13 +38,16 @@ class LiveGame:
     """Một lượt chơi + luồng nền bước 60 tick/s. Mọi truy cập trạng thái đi qua khóa."""
 
     def __init__(self, mode, tuning, scenario, seed, inventory=None, inventory_out=None):
-        self._args = (mode, tuning, scenario, seed, inventory)
-        self.mode = mode
         self.tuning = tuning
+        self.seed = seed
+        self.gather_scenario = scenario if mode == "gather" else {}
+        self.mode = mode
         self.inventory_out = inventory_out
+        self._carry_stock = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
+        self._args = (mode, tuning, scenario, seed, inventory)
         self._reset()
 
     def _reset(self):
@@ -96,6 +99,45 @@ class LiveGame:
                     s.write_inventory_if_done(self.inventory_out)
                 except OSError as e:
                     sys.stderr.write(f"lỗi ghi kho: {e}\n")
+            if self.mode == "gather":
+                self._transition_to_quan()
+
+    def _transition_to_quan(self):
+        """Chuyển tiếp vào quán với đúng giỏ vừa kết thúc buổi lặn."""
+        inventory = dict(self.session.sim.inventory_items())
+        inventory = self._merge_stock(inventory, self._carry_stock)
+        self._carry_stock = {}
+        self.mode = "quan"
+        self.inventory_out = None
+        self._args = ("quan", self.tuning, {}, self.seed, inventory)
+        self._reset()
+
+    def _merge_stock(self, first, second):
+        result = dict(first)
+        for kind, amount in second.items():
+            result[kind] = result.get(kind, 0) + amount
+        return {kind: amount for kind, amount in result.items() if amount > 0}
+
+    def transition_to_gather(self):
+        """Chuyển thủ công từ quán sang buổi gather."""
+        with self._lock:
+            if self.mode != "quan":
+                return
+            stock = dict(self.session.sim.stock)
+            capacity = int(self.tuning["gather"]["hold_capacity"])
+            hold = []
+            remaining = {}
+            for kind in sorted(stock):
+                amount = int(stock[kind])
+                use = min(amount, capacity - len(hold))
+                hold.extend([kind] * use)
+                if amount > use:
+                    remaining[kind] = amount - use
+            self._carry_stock = remaining
+            self.mode = "gather"
+            self.inventory_out = None
+            self._args = ("gather", self.tuning, {"hold": hold}, self.seed, None)
+            self._reset()
 
     # --- API cho handler -----------------------------------------------------------
     def state_json(self) -> bytes:
@@ -175,6 +217,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self.game.set_input(body)
             elif path == "/restart":
                 self.game.restart()
+            elif path == "/gather":
+                self.game.transition_to_gather()
             else:
                 self._send(404, b'{"error":"khong co"}')
                 return

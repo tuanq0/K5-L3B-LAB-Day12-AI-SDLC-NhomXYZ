@@ -27,6 +27,15 @@ def _post(url, obj):
 
 
 class LiveServerTest(unittest.TestCase):
+    def test_gather_end_transitions_to_quan_with_inventory(self):
+        tuning = load_contract()["tuning"]
+        game = LiveGame("gather", tuning, {"hold": ["ca_loc", "bong_sung"]}, 1)
+        game.inputs.set(interact=True)
+        game._tick_once()
+        self.assertEqual(game.mode, "quan")
+        self.assertEqual(game.session.mode, "quan")
+        self.assertEqual(game.session.sim.stock, {"ca_loc": 1, "bong_sung": 1})
+
     def test_state_input_and_clean_stop(self):
         tuning = load_contract()["tuning"]
         server = LiveServer(LiveGame("gather", tuning, {}, 1), port=0)  # cổng ngẫu nhiên
